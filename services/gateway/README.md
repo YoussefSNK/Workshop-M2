@@ -1,6 +1,6 @@
 # Gateway / WAF
 
-Pas de Dockerfile : on utilise l'image officielle `owasp/modsecurity-crs:nginx-alpine`
+Pas de Dockerfile : on utilise l'image officielle `owasp/modsecurity-crs:4.25.2-nginx-alpine-lts`
 (ModSecurity + règles OWASP Core Rule Set). Configurée en reverse-proxy dans docker-compose.yml :
 - `BACKEND=http://payment-api:8000` : le WAF relaie vers l'API.
 - `MODSEC_RULE_ENGINE=On` : blocage actif. Mettre `DetectionOnly` pour observer sans bloquer.

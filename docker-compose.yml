@@ -59,7 +59,7 @@ services:
 
   # ---------- PILIER CYBERSÉCURITÉ ----------
   gateway:
-    image: owasp/modsecurity-crs:4.7.0-nginx-alpine   # WAF ModSecurity + règles OWASP CRS
+    image: owasp/modsecurity-crs:4.25.2-nginx-alpine-lts   # WAF ModSecurity + règles OWASP CRS
     environment:
       BACKEND: http://payment-api:8000     # le WAF relaie vers l'API, en filtrant
       PORT: "8080"
