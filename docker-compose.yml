@@ -100,6 +100,11 @@ services:
       DOCKER_HOST: tcp://docker-socket-proxy:2375
       TARGET_PROJECT: resilience-alpha
       VERIFY_URL: http://payment-api:8000/health
+      # Transaction de contrôle (login + virement aller-retour) pour prouver la reprise
+      API_URL: http://payment-api:8000
+      AUTH_URL: http://auth:8000
+      CONTROL_USER: alice
+      CONTROL_PASSWORD: ${CONTROL_PASSWORD}
     networks: [backnet]
     depends_on: [docker-socket-proxy]
 

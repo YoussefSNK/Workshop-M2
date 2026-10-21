@@ -20,6 +20,13 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 DOCKER_HOST = os.environ.get("DOCKER_HOST", "tcp://docker-socket-proxy:2375")
 VERIFY_URL = os.environ.get("VERIFY_URL", "http://payment-api:8000/health")
+API_URL = os.environ.get("API_URL", "http://payment-api:8000")
+AUTH_URL = os.environ.get("AUTH_URL", "http://auth:8000")
+CONTROL_USER = os.environ.get("CONTROL_USER", "alice")
+CONTROL_PASSWORD = os.environ.get("CONTROL_PASSWORD", "alice-pw")
+# Aller-retour d'un centime : prouve la chaîne métier complète sans modifier les soldes.
+CONTROL_LEGS = [("ACC-ALICE", "ACC-BOB"), ("ACC-BOB", "ACC-ALICE")]
+CONTROL_AMOUNT = "0.01"
 WATCHED = ["payment-api", "auth", "db", "gateway"]
 
 client = docker.DockerClient(base_url=DOCKER_HOST)
@@ -46,17 +53,38 @@ def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def verify_recovery(timeout: int = 45) -> bool:
-    """Le service est rétabli seulement s'il RÉPOND. Un conteneur "up" ne suffit pas."""
+def control_transaction() -> list[str] | None:
+    """Transaction de contrôle réelle : login (auth) -> virement aller-retour (API + base).
+    Renvoie les ids des transactions créées, ou None si une étape échoue."""
+    r = requests.post(f"{AUTH_URL}/login", timeout=3,
+                      json={"username": CONTROL_USER, "password": CONTROL_PASSWORD})
+    if r.status_code != 200:
+        return None
+    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    ids = []
+    for src, dst in CONTROL_LEGS:
+        r = requests.post(f"{API_URL}/transactions", headers=headers, timeout=3,
+                          json={"from_account": src, "to_account": dst, "amount": CONTROL_AMOUNT})
+        if r.status_code != 200:
+            return None
+        ids.append(r.json()["id"])
+    return ids
+
+
+def verify_recovery(timeout: int = 45) -> list[str] | None:
+    """Le service est rétabli seulement s'il RÉPOND et TRAITE une transaction.
+    Un conteneur "up" ne suffit pas, un /health OK non plus."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             if requests.get(VERIFY_URL, timeout=3).status_code == 200:
-                return True
+                ids = control_transaction()
+                if ids:
+                    return ids
         except Exception:
             pass
         time.sleep(2)
-    return False
+    return None
 
 
 def decide_and_act(inc: Incident) -> dict:
@@ -115,7 +143,8 @@ def handle_incident(inc: Incident):
     INCIDENTS.append(record)
 
     result = decide_and_act(inc)
-    recovered = verify_recovery()
+    control_ids = verify_recovery()
+    recovered = control_ids is not None
     rto = (_now() - started).total_seconds()
 
     record.update({
@@ -123,6 +152,7 @@ def handle_incident(inc: Incident):
         "containers": result["containers"],
         "status": "resolved" if recovered else "escalate",
         "recovered": recovered,
+        "control_transactions": control_ids or [],
         "rto_seconds": round(rto, 1),
     })
     print(f"[remediation] {record['id']} {record['status']} RTO={record['rto_seconds']}s", flush=True)
