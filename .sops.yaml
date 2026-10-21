@@ -1,0 +1,6 @@
+# Règle de chiffrement SOPS. Remplacer la clé age par celle de l'équipe :
+#   age-keygen -o age.key   (garder age.key HORS du dépôt)
+# Puis chiffrer :  sops --encrypt secrets/secrets.yaml > secrets/secrets.enc.yaml
+creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    age: age1exampleXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxxxxxx

@@ -1,0 +1,148 @@
+# PROJECT RESILIENCE-ALPHA — topologie cible.
+# Les services marqués "# À IMPLÉMENTER" sont des squelettes : on les remplit ensemble (mardi/mercredi).
+# Principe sécu : seuls gateway, frontend, payment-api et grafana sont publiés. Le reste est interne.
+
+name: resilience-alpha
+
+networks:
+  frontnet:            # exposé au réseau du groupe
+  backnet:             # interne : DB, secrets, remédiation — jamais publié
+    internal: true
+
+volumes:
+  pgdata:
+  grafana-data:
+  ml-models:
+
+services:
+
+  # ---------- PILIER DÉVELOPPEMENT ----------
+  payment-api:
+    build: ./services/payment-api          # FastAPI (implémenté)
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+    # Ressources bridées : simule un nœud de prod modeste. Sous le flood, l'API sature
+    # pour de vrai (latence qui explose, timeouts) -> dégradation visible, reprise justifiée.
+    # À retirer/augmenter si la machine est juste. Ajuster cpus si la saturation est trop/pas assez forte.
+    cpus: 0.5
+    mem_limit: 256m
+    networks: [frontnet, backnet]
+    depends_on: [db]
+    # /metrics exposé pour Prometheus ; healthcheck = vraie requête (vérifie la base)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  auth:
+    build: ./services/auth                 # FastAPI + JWT (implémenté)
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+    networks: [backnet]
+
+  frontend:
+    build: ./services/frontend             # React + Tailwind (implémenté)
+    ports: ["3000:80"]
+    networks: [frontnet, backnet]          # backnet : pour relayer vers auth/gateway/remédiation
+    depends_on: [payment-api, remediation-engine]
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: payments
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [backnet]                    # jamais exposé
+
+  # ---------- PILIER CYBERSÉCURITÉ ----------
+  gateway:
+    image: owasp/modsecurity-crs:4.7.0-nginx-alpine   # WAF ModSecurity + règles OWASP CRS
+    environment:
+      BACKEND: http://payment-api:8000     # le WAF relaie vers l'API, en filtrant
+      PORT: "8080"
+      MODSEC_RULE_ENGINE: "On"             # bloque réellement (DetectionOnly pour observer sans bloquer)
+      PARANOIA: "1"
+    ports: ["8000:8080"]                   # SEUL point d'entrée public de l'API
+    networks: [frontnet, backnet]
+    depends_on: [payment-api]
+
+  # ---------- PILIER IA / DATA ----------
+  ml-detector:
+    build: ./services/ml-detector          # Isolation Forest (implémenté)
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      REMEDIATION_URL: http://remediation-engine:9000/incident
+      BASELINE_SECONDS: "60"               # durée d'apprentissage du "normal" au démarrage
+      CONSECUTIVE_ANOMALIES: "3"           # confirmations avant de déclencher (anti faux positif)
+    volumes: [ml-models:/models]
+    networks: [backnet]
+    depends_on: [prometheus, remediation-engine]
+
+  rag-assistant:
+    build: ./services/rag-assistant        # Ollama + LangChain + Chroma (implémenté)
+    environment:
+      OLLAMA_URL: ${OLLAMA_URL}            # local, ou PC de délestage IA
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+    volumes: ["./docs:/corpus:ro"]         # la base documentaire = les docs de l'équipe
+    ports: ["8100:8100"]
+    # frontnet (non interne) : requis pour (1) publier le port 8100 vers l'hôte et
+    # (2) atteindre Ollama sur l'hôte (host.docker.internal), impossible depuis un réseau internal.
+    networks: [frontnet, backnet]
+
+  # ---------- MOTEUR DE REMÉDIATION ----------
+  remediation-engine:
+    build: ./services/remediation-engine   # Python FastAPI (implémenté)
+    # N'agit QUE via le proxy du socket Docker (moindre privilège), jamais le socket en direct
+    environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      TARGET_PROJECT: resilience-alpha
+      VERIFY_URL: http://payment-api:8000/health
+    networks: [backnet]
+    depends_on: [docker-socket-proxy]
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1        # autorise lister/inspecter
+      POST: 1              # requis pour les actions
+      ALLOW_RESTARTS: 1    # autorise UNIQUEMENT restart (pas stop/kill/exec)
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      EXEC: 0              # pas d'exécution de commande dans les conteneurs
+      INFO: 0              # tout le reste interdit : le moteur ne peut PAS tout faire
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+    networks: [backnet]
+
+  # ---------- PILIER INFRASTRUCTURE (observabilité) ----------
+  prometheus:
+    image: prom/prometheus:latest
+    volumes: ["./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    networks: [backnet]
+
+  loki:
+    image: grafana/loki:latest
+    volumes: ["./observability/loki/loki-config.yml:/etc/loki/local-config.yaml:ro"]
+    networks: [backnet]
+
+  promtail:
+    image: grafana/promtail:latest
+    volumes:
+      - "./observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"   # découverte des conteneurs
+    command: -config.file=/etc/promtail/config.yml
+    networks: [backnet]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - "./observability/grafana/provisioning:/etc/grafana/provisioning:ro"
+    networks: [frontnet, backnet]
+    depends_on: [prometheus, loki]

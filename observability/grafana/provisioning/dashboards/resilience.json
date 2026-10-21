@@ -1,0 +1,31 @@
+{
+  "title": "RESILIENCE-ALPHA — Service de paiement",
+  "uid": "resilience-alpha",
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Débit requêtes (req/s) — payment-api",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [ { "expr": "sum(rate(http_requests_total{job=\"payment-api\"}[1m]))", "legendFormat": "req/s" } ]
+    },
+    {
+      "type": "timeseries", "title": "Taux d'erreur 5xx (%)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [ { "expr": "100 * sum(rate(http_requests_total{job=\"payment-api\",status=~\"5..\"}[1m])) / clamp_min(sum(rate(http_requests_total{job=\"payment-api\"}[1m])), 1)", "legendFormat": "erreurs %" } ]
+    },
+    {
+      "type": "timeseries", "title": "Latence p95 (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [ { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"payment-api\"}[1m])) by (le))", "legendFormat": "p95" } ]
+    },
+    {
+      "type": "logs", "title": "Journaux (Loki)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "expr": "{container=~\"resilience-alpha.*\"}" } ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s      # fin : on veut voir le pic d'attaque en direct
+
+scrape_configs:
+  - job_name: payment-api
+    static_configs: [{ targets: ['payment-api:8000'] }]
+  - job_name: auth
+    static_configs: [{ targets: ['auth:8000'] }]
+  - job_name: remediation-engine
+    static_configs: [{ targets: ['remediation-engine:9000'] }]
+  - job_name: prometheus
+    static_configs: [{ targets: ['localhost:9090'] }]

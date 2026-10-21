@@ -1,0 +1,11 @@
+---
+# Remise à zéro propre (conteneurs + volumes) pour rejouer une démo.
+- name: Réinitialiser RESILIENCE-ALPHA
+  hosts: host
+  gather_facts: false
+  vars:
+    project_dir: "{{ playbook_dir }}/../.."
+  tasks:
+    - name: Arrêter et supprimer conteneurs + volumes
+      command: docker compose down -v
+      args: { chdir: "{{ project_dir }}" }
