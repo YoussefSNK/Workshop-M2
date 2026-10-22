@@ -18,6 +18,7 @@ import datetime
 import requests
 import numpy as np
 from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 import joblib
 
 PROM = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
@@ -30,7 +31,9 @@ MODEL_PATH = "/models/iforest.joblib"
 QUERIES = {
     "rate": 'sum(rate(http_requests_total{job="payment-api"}[1m]))',
     "errors": 'sum(rate(http_requests_total{job="payment-api",status=~"5.."}[1m]))',
-    "p95": 'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="payment-api"}[1m])) by (le))',
+    # Histogramme "highr" (22 paliers) : l'histogramme par défaut (0.1/0.5/1 s) est trop
+    # grossier, le p95 y reste bloqué à 0.095 s tant que l'API répond en moins de 100 ms.
+    "p95": 'histogram_quantile(0.95, sum(rate(http_request_duration_highr_seconds_bucket{job="payment-api"}[1m])) by (le))',
 }
 
 
@@ -73,9 +76,14 @@ def collect_baseline() -> np.ndarray:
         samples.append(features())
         time.sleep(SAMPLE_EVERY)
     arr = np.array(samples, dtype=float)
-    # un peu de bruit pour éviter un baseline dégénéré si le trafic est très stable
-    arr += np.random.normal(0, 1e-6, arr.shape)
-    return arr
+    # Le trafic au repos est quasi constant (débit ~0.3, 0 erreur, latence ~0.01s). Un baseline
+    # aussi plat est dégénéré : Isolation Forest ne peut y apprendre aucune frontière utile et
+    # confond repos et flood. On élargit donc chaque feature autour de sa moyenne observée, avec
+    # une amplitude relative, pour que le modèle apprenne un "normal" ayant une vraie dispersion.
+    mean = arr.mean(axis=0)
+    spread = np.maximum(np.abs(mean), [0.5, 0.02, 0.005]) * 0.25
+    jitter = np.random.normal(0, spread, (max(len(arr), 40), arr.shape[1]))
+    return np.clip(np.vstack([arr, mean + jitter]), 0, None)
 
 
 def send_incident(vec, score):
@@ -97,9 +105,17 @@ def send_incident(vec, score):
 def main():
     wait_for_prometheus()
     baseline = collect_baseline()
+    # Normalisation : les trois features ont des échelles très différentes (débit ~ dizaines,
+    # ratio d'erreur ~ 0-1, latence ~ centièmes de seconde). Sans mise à l'échelle, le débit
+    # écrase tout et le modèle n'apprend rien d'exploitable sur la latence et les erreurs.
+    scaler = StandardScaler().fit(baseline)
+    # contamination : fraction du baseline tolérée comme "limite". 0.05 place la frontière
+    # juste autour du cluster de repos -> le repos reste normal, mais tout écart net (flood,
+    # même modéré) sort de l'enveloppe. Trop bas (0.01) collerait la frontière et ne détecterait
+    # plus rien ; validé empiriquement sur le baseline réel de l'API.
     model = IsolationForest(contamination=0.05, random_state=42)
-    model.fit(baseline)
-    joblib.dump(model, MODEL_PATH)
+    model.fit(scaler.transform(baseline))
+    joblib.dump({"model": model, "scaler": scaler}, MODEL_PATH)
     print("[ml] Modèle entraîné. Surveillance en cours.", flush=True)
 
     streak = 0
@@ -110,8 +126,9 @@ def main():
             cooldown -= 1
             continue
         vec = features()
-        pred = model.predict([vec])[0]          # -1 = anomalie, 1 = normal
-        score = float(model.score_samples([vec])[0])
+        x = scaler.transform([vec])
+        pred = model.predict(x)[0]              # -1 = anomalie, 1 = normal
+        score = float(model.score_samples(x)[0])
         if pred == -1:
             streak += 1
             print(f"[ml] anomalie potentielle {streak}/{CONSECUTIVE} {vec}", flush=True)

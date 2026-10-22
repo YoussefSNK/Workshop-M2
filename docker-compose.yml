@@ -25,8 +25,8 @@ services:
     # Ressources bridées : simule un nœud de prod modeste. Sous le flood, l'API sature
     # pour de vrai (latence qui explose, timeouts) -> dégradation visible, reprise justifiée.
     # À retirer/augmenter si la machine est juste. Ajuster cpus si la saturation est trop/pas assez forte.
-    cpus: 0.5
-    mem_limit: 256m
+    cpus: 0.25
+    mem_limit: 192m
     networks: [frontnet, backnet]
     depends_on: [db]
     # /metrics exposé pour Prometheus ; healthcheck = vraie requête (vérifie la base)
@@ -108,18 +108,15 @@ services:
     networks: [backnet]
     depends_on: [docker-socket-proxy]
 
+  # Mini-proxy maison : moindre privilège RÉEL. Allowlist nginx stricte -> seules les routes
+  # "lister / inspecter / restart" passent ; create, stop, start, kill, exec, images, volumes,
+  # réseaux = 403. Le proxy tecnativa ne sait PAS limiter au seul restart (CONTAINERS=1 ouvre
+  # tout /containers) : voir services/docker-restart-proxy/README.md.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
-    environment:
-      CONTAINERS: 1        # autorise lister/inspecter
-      POST: 1              # requis pour les actions
-      ALLOW_RESTARTS: 1    # autorise UNIQUEMENT restart (pas stop/kill/exec)
-      IMAGES: 0
-      NETWORKS: 0
-      VOLUMES: 0
-      EXEC: 0              # pas d'exécution de commande dans les conteneurs
-      INFO: 0              # tout le reste interdit : le moteur ne peut PAS tout faire
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+    image: nginx:1.27-alpine
+    volumes:
+      - "./services/docker-restart-proxy/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
     networks: [backnet]
 
   # ---------- PILIER INFRASTRUCTURE (observabilité) ----------
